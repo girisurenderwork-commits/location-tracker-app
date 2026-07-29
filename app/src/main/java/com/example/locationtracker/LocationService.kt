@@ -54,24 +54,32 @@ class LocationService : Service() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            // Every 60 seconds or 0 meters (whichever triggers first) — GPS for best accuracy.
+            // Every 30 seconds, GPS for best accuracy (typically 3-8m outdoors).
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
-                60_000L,
+                30_000L,
                 0f,
                 locationListener
             )
-            // Fall back to network provider too, in case GPS has no fix yet (e.g. indoors)
+            // Network provider as a backup source, e.g. indoors when GPS has no fix yet.
             try {
                 locationManager.requestLocationUpdates(
                     LocationManager.NETWORK_PROVIDER,
-                    60_000L,
+                    30_000L,
                     0f,
                     locationListener
                 )
             } catch (_: Exception) {
                 // Network provider may not exist on all devices; safe to ignore
             }
+            // Immediately try the last known fix so the map isn't empty while waiting
+            // for the first fresh reading.
+            try {
+                val last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                if (last != null && System.currentTimeMillis() - last.time < 5 * 60_000) {
+                    sendLocation(last)
+                }
+            } catch (_: Exception) {}
         } else {
             stopSelf()
         }
@@ -79,10 +87,19 @@ class LocationService : Service() {
         return START_STICKY
     }
 
+    private var bestAccuracySoFar = Float.MAX_VALUE
+
     private fun sendLocation(location: Location) {
+        // Discard clearly noisy fixes (e.g. a bad network-provider guess) unless it's
+        // the only reading we've gotten in a while.
+        if (location.accuracy > 100f && location.accuracy > bestAccuracySoFar * 3) return
+        bestAccuracySoFar = minOf(bestAccuracySoFar, location.accuracy)
+
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val speedKmh = if (location.hasSpeed()) location.speed * 3.6 else null
         val message = "Lat: ${location.latitude}, Lon: ${location.longitude}, " +
-                "Accuracy: ${location.accuracy}m, Time: $timestamp"
+                "Accuracy: ${location.accuracy}m, Time: $timestamp" +
+                (speedKmh?.let { ", Speed: %.1fkm/h".format(it) } ?: "")
 
         updateNotification(message)
 
