@@ -136,6 +136,7 @@ main{flex:1;display:flex;min-height:0;}
   var trail = [];
   var trailLine = L.polyline([],{color:'#2563eb',weight:3,opacity:0.5}).addTo(map);
   var firstFix = true;
+  var lastMsgId = null;
 
   /* ── UI refs ── */
   var topicIn  = document.getElementById('topicIn');
@@ -245,39 +246,48 @@ main{flex:1;display:flex;min-height:0;}
   var lastSince = Math.floor(Date.now()/1000) - 1; /* start from "now" */
   var topic = '';
 
-  function poll(){
+  function poll(useAll){
     if(!topic) return;
+    /* Use since=all on first call to always get the latest cached message,
+       then switch to since=<last_id> so we only get new ones */
+    var since = useAll ? 'all' : lastMsgId ? lastMsgId : 'all';
     var url = 'https://ntfy.sh/'+encodeURIComponent(topic)+
-              '/json?poll=1&since='+lastSince;
+              '/json?poll=1&since='+since;
     fetch(url)
-      .then(function(r){ return r.text(); })
+      .then(function(r){
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        return r.text();
+      })
       .then(function(text){
         var lines = text.trim().split('\n');
+        var gotMsg = false;
         lines.forEach(function(line){
           if(!line) return;
           try{
             var obj = JSON.parse(line);
             if(obj.event === 'message' && obj.message){
-              if(obj.time > lastSince) lastSince = obj.time;
+              lastMsgId = obj.id; /* track last id for next poll */
               var p = parseMsg(obj.message);
-              if(p) renderLocation(p);
+              if(p){ renderLocation(p); gotMsg = true; }
             }
           }catch(e){}
         });
-        setStatus(bText.textContent.startsWith('live') ? bText.textContent : 'connected, waiting for ping', 'live');
+        if(!gotMsg && !bText.textContent.startsWith('live')){
+          setStatus('connected, waiting for ping', 'live');
+        }
       })
-      .catch(function(){
-        setStatus('fetch error, retrying', 'err');
+      .catch(function(err){
+        setStatus('retrying... ('+err.message+')', 'err');
       });
   }
 
   function startPolling(t){
     topic = t;
-    lastSince = Math.floor(Date.now()/1000) - 300; /* fetch last 5 min too */
+    lastMsgId = null;
     firstFix = true;
     clearInterval(pollTimer);
-    poll(); /* immediate first fetch */
-    pollTimer = setInterval(poll, 10000); /* then every 10 seconds */
+    poll(true); /* first call: fetch ALL cached messages to get latest instantly */
+    pollTimer = setInterval(function(){ poll(false); }, 10000);
     setStatus('connected, waiting for ping', 'wait');
     startBtn.style.display = 'none';
     stopBtn.style.display  = 'inline-block';
